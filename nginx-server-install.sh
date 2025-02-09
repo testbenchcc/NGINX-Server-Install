@@ -120,16 +120,34 @@ firewall_config() {
 echo "Updating package lists..."
 sudo apt update -y
 
+# Install required packages
+echo "Installing required packages..."
+sudo apt install -y curl
+
 # Install and setup Tailscale
 echo "Installing Tailscale..."
-curl -fsSL https://tailscale.com/install.sh | sudo sh
+if ! curl -fsSL https://tailscale.com/install.sh | sudo sh; then
+    echo "Failed to install Tailscale. Please check your internet connection and try again."
+    exit 1
+fi
 
 echo "Enabling and starting Tailscale service..."
-sudo systemctl enable tailscaled
-sudo systemctl start tailscaled
+if ! systemctl is-active --quiet tailscaled; then
+    if ! sudo systemctl enable tailscaled; then
+        echo "Failed to enable Tailscale service. Please check if Tailscale was installed correctly."
+        exit 1
+    fi
+    if ! sudo systemctl start tailscaled; then
+        echo "Failed to start Tailscale service. Please check if Tailscale was installed correctly."
+        exit 1
+    fi
+fi
 
 echo "Starting Tailscale with SSH enabled..."
-sudo tailscale up --ssh
+if ! sudo tailscale up --ssh; then
+    echo "Failed to configure Tailscale. Please check if Tailscale was installed correctly."
+    exit 1
+fi
 
 # Install Nginx
 echo "Installing Nginx..."
