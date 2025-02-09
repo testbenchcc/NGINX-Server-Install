@@ -2,9 +2,120 @@
 
 set -e  # Exit immediately if a command exits with a non-zero status
 
-# Define domain
-DOMAIN="husqy.net"
+# Get domain and service address from user
+read -p "Enter your public domain (e.g., husqy.net): " DOMAIN
+read -p "Enter your full service address (e.g., http://zbook:3000): " SERVICE_ADDRESS
+
+# Validate inputs
+if [ -z "$DOMAIN" ] || [ -z "$SERVICE_ADDRESS" ]; then
+    echo "Error: Domain and service address cannot be empty"
+    exit 1
+fi
+
 WEBROOT="/var/www/$DOMAIN/html"
+
+# Function to handle SSL certificate
+setup_ssl_certificate() {
+    echo "Setting up SSL certificate..."
+    echo "Choose SSL certificate option:"
+    echo "1) Use existing certificate files"
+    echo "2) Paste certificate data"
+    echo "3) Generate new certificate with Certbot"
+    read -p "Enter selection [1-3]: " SSL_CHOICE
+
+    case "$SSL_CHOICE" in
+        1)
+            read -p "Enter path to SSL certificate file: " SSL_CERT
+            read -p "Enter path to SSL private key file: " SSL_KEY
+            if [ ! -f "$SSL_CERT" ] || [ ! -f "$SSL_KEY" ]; then
+                echo "Error: Certificate files not found"
+                exit 1
+            fi
+            # Copy certificate files to appropriate location
+            sudo cp "$SSL_CERT" "/etc/ssl/certs/$DOMAIN.crt"
+            sudo cp "$SSL_KEY" "/etc/ssl/private/$DOMAIN.key"
+            ;;
+        2)
+            # Create temporary files for certificate data
+            TEMP_CERT=$(mktemp)
+            TEMP_KEY=$(mktemp)
+            
+            echo "Paste your certificate data (press Ctrl+D when done):"
+            cat > "$TEMP_CERT"
+            
+            echo "Paste your private key data (press Ctrl+D when done):"
+            cat > "$TEMP_KEY"
+            
+            # Validate certificate and key
+            if ! openssl x509 -noout -in "$TEMP_CERT" 2>/dev/null; then
+                echo "Error: Invalid certificate data"
+                rm "$TEMP_CERT" "$TEMP_KEY"
+                exit 1
+            fi
+            
+            if ! openssl rsa -noout -in "$TEMP_KEY" 2>/dev/null; then
+                echo "Error: Invalid private key data"
+                rm "$TEMP_CERT" "$TEMP_KEY"
+                exit 1
+            fi
+            
+            # Copy validated files to appropriate location
+            sudo mv "$TEMP_CERT" "/etc/ssl/certs/$DOMAIN.crt"
+            sudo mv "$TEMP_KEY" "/etc/ssl/private/$DOMAIN.key"
+            sudo chmod 644 "/etc/ssl/certs/$DOMAIN.crt"
+            sudo chmod 600 "/etc/ssl/private/$DOMAIN.key"
+            ;;
+        3)
+            echo "Installing Certbot..."
+            sudo apt install -y certbot python3-certbot-nginx
+            echo "Generating SSL certificate with Certbot..."
+            sudo certbot --nginx -d "$DOMAIN"
+            ;;
+        *)
+            echo "Invalid selection"
+            exit 1
+            ;;
+    esac
+}
+
+# Create Nginx configuration
+create_nginx_config() {
+    echo "Creating Nginx configuration..."
+    sudo tee /etc/nginx/sites-available/$DOMAIN << EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/ssl/certs/$DOMAIN.crt;
+    ssl_certificate_key /etc/ssl/private/$DOMAIN.key;
+
+    location / {
+        proxy_pass $SERVICE_ADDRESS;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+}
+
+firewall_config() {
+    local rule_name="${1:?firewall-config requires a rule name (Nginx Full, Nginx HTTP, Nginx HTTPS)}"
+    sudo ufw allow "$rule_name"
+    yes | sudo ufw enable
+    sudo ufw commit
+    sudo ufw reload
+}
 
 echo "Updating package lists..."
 sudo apt update -y
@@ -24,10 +135,6 @@ sudo tailscale up --ssh
 echo "Installing Nginx..."
 sudo apt install -y nginx
 
-# Opening ports in firewall
-sudo ufw allow 80
-sudo ufw allow 443
-
 # Prompt user to choose a firewall rule
 echo "Choose a firewall rule to apply:"
 echo "1) Nginx Full (Allows both HTTP & HTTPS)"
@@ -40,32 +147,27 @@ read -p "Enter selection [1-4]: " FIREWALL_CHOICE
 case "$FIREWALL_CHOICE" in
     1)
         echo "Applying 'Nginx Full' firewall rule..."
-        sudo ufw allow 'Nginx Full'
+        firewall_config 'Nginx Full'
         ;;
     2)
         echo "Applying 'Nginx HTTP' firewall rule..."
-        sudo ufw allow 'Nginx HTTP'
+        firewall_config 'Nginx HTTP'
         ;;
     3)
         echo "Applying 'Nginx HTTPS' firewall rule..."
-        sudo ufw allow 'Nginx HTTPS'
+        firewall_config 'Nginx HTTPS'
         ;;
     4)
-        echo "Skipping firewall adjustments..."
+        echo "Skipping firewall setup..."
         ;;
     *)
-        echo "Invalid choice! Defaulting to 'Nginx Full'."
-        sudo ufw allow 'Nginx Full'
+        echo "Invalid selection"
+        exit 1
         ;;
 esac
 
-sudo ufw reload
-
 # Verify firewall status (optional)
 sudo ufw status
-
-# Enable
-yes | sudo ufw enable
 
 # Enable Nginx on boot
 echo "Enabling Nginx to start on boot..."
@@ -81,59 +183,12 @@ sudo mkdir -p $WEBROOT
 sudo chown -R $USER:$USER /var/www/$DOMAIN
 sudo chmod -R 755 /var/www/$DOMAIN
 
-sudo mkdir /var/www/$DOMAIN/certs
-sudo nano /var/www/$DOMAIN/certs/origin.pem
-sudo nano /var/www/$DOMAIN/certs/private.pem
-
-# Create a sample index.html page
-echo "Creating index.html..."
-sudo tee "$WEBROOT/index.html" > /dev/null <<EOF
-<html>
-    <head>
-        <title>Welcome to $DOMAIN!</title>
-    </head>
-    <body>
-        <h1>Success! The $DOMAIN server block is working!</h1>
-    </body>
-</html>
-EOF
-
-# Create Nginx Server Block
-echo "Configuring Nginx server block..."
-sudo tee /etc/nginx/sites-available/$DOMAIN > /dev/null <<EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN www.$DOMAIN;
-    return 301 https://$host$request_uri;  # Redirect all HTTP to HTTPS
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-
-    server_name $DOMAIN www.$DOMAIN;
-
-    ssl_certificate /var/www/$DOMAIN/certs/origin.pem;
-    ssl_certificate_key /var/www/$DOMAIN/certs/private.pem;
-
-    location / {
-        proxy_pass http://zbook:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-EOF
+setup_ssl_certificate
+create_nginx_config
 
 # Enable server block
 echo "Enabling Nginx site configuration..."
 sudo ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
-
-# Search and replace: Uncomment 'server_names_hash_bucket_size 64;'
-echo "Uncommenting 'server_names_hash_bucket_size 64;' in nginx.conf..."
-sudo nano /etc/nginx/nginx.conf
 
 # Test Nginx config and reload
 echo "Testing Nginx configuration..."
@@ -152,3 +207,12 @@ echo ""
 echo "Set your SSL/TLS setting to full on cloudflare. You will only see the server"
 echo "block if you acces it with your domain name. If you visit the site with the "
 echo "address above, you will see the standard NGINX welcome page."
+
+echo "Installation complete!"
+read -p "Would you like to reboot now? (y/n): " REBOOT_CHOICE
+if [[ "$REBOOT_CHOICE" =~ ^[Yy]$ ]]; then
+    echo "Rebooting system..."
+    sudo reboot
+else
+    echo "Please remember to reboot your system to apply all changes."
+fi
