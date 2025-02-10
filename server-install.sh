@@ -40,11 +40,21 @@ setup_ssl_certificate() {
             TEMP_CERT=$(mktemp)
             TEMP_KEY=$(mktemp)
             
-            echo "Paste your certificate data (press Ctrl+D when done):"
-            cat > "$TEMP_CERT"
+            echo "Paste your certificate data and type 'END_CERT' on a new line when done:"
+            while IFS= read -r line; do
+                if [ "$line" = "END_CERT" ]; then
+                    break
+                fi
+                echo "$line" >> "$TEMP_CERT"
+            done
             
-            echo "Paste your private key data (press Ctrl+D when done):"
-            cat > "$TEMP_KEY"
+            echo "Paste your private key data and type 'END_CERT' on a new line when done:"
+            while IFS= read -r line; do
+                if [ "$line" = "END_CERT" ]; then
+                    break
+                fi
+                echo "$line" >> "$TEMP_KEY"
+            done
             
             # Validate certificate and key
             if ! openssl x509 -noout -in "$TEMP_CERT" 2>/dev/null; then
@@ -109,16 +119,6 @@ server {
 EOF
 }
 
-firewall_config() {
-    local rule_name="${1:?firewall-config requires a rule name (Nginx Full, Nginx HTTP, Nginx HTTPS)}"
-    # Enable UFW if not already enabled
-    if ! sudo ufw status | grep -q "Status: active"; then
-        yes | sudo ufw enable
-    fi
-    sudo ufw allow "$rule_name"
-    sudo ufw reload
-}
-
 echo "Updating package lists..."
 sudo apt update -y
 
@@ -158,6 +158,16 @@ fi
 # Install Nginx
 echo "Installing Nginx..."
 sudo apt install -y nginx
+
+firewall_config() {
+    local rule_name="${1:?firewall-config requires a rule name (Nginx Full, Nginx HTTP, Nginx HTTPS)}"
+    # Enable UFW if not already enabled
+    if ! sudo ufw status | grep -q "Status: active"; then
+        yes | sudo ufw enable
+    fi
+    sudo ufw allow "$rule_name"
+    sudo ufw reload
+}
 
 # Prompt user to choose a firewall rule
 echo "Choose a firewall rule to apply:"
