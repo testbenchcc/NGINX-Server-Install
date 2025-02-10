@@ -111,9 +111,11 @@ EOF
 
 firewall_config() {
     local rule_name="${1:?firewall-config requires a rule name (Nginx Full, Nginx HTTP, Nginx HTTPS)}"
+    # Enable UFW if not already enabled
+    if ! sudo ufw status | grep -q "Status: active"; then
+        yes | sudo ufw enable
+    fi
     sudo ufw allow "$rule_name"
-    yes | sudo ufw enable
-    sudo ufw commit
     sudo ufw reload
 }
 
