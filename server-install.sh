@@ -78,7 +78,7 @@ setup_ssl_certificate() {
     esac
 }
 
-# Create Nginx configuration
+# Function to create Nginx configuration
 create_nginx_config() {
     echo "Creating Nginx configuration..."
     sudo tee /etc/nginx/sites-available/$DOMAIN << EOF
@@ -120,33 +120,37 @@ firewall_config() {
 echo "Updating package lists..."
 sudo apt update -y
 
-# Install required packages
-echo "Installing required packages..."
-sudo apt install -y curl
+# Ask about Tailscale installation
+read -p "Would you like to install Tailscale? (y/n): " INSTALL_TAILSCALE
+if [[ "$INSTALL_TAILSCALE" =~ ^[Yy]$ ]]; then
+    # Install required packages
+    echo "Installing required packages..."
+    sudo apt install -y curl
 
-# Install and setup Tailscale
-echo "Installing Tailscale..."
-if ! curl -fsSL https://tailscale.com/install.sh | sudo sh; then
-    echo "Failed to install Tailscale. Please check your internet connection and try again."
-    exit 1
-fi
-
-echo "Enabling and starting Tailscale service..."
-if ! systemctl is-active --quiet tailscaled; then
-    if ! sudo systemctl enable tailscaled; then
-        echo "Failed to enable Tailscale service. Please check if Tailscale was installed correctly."
+    # Install and setup Tailscale
+    echo "Installing Tailscale..."
+    if ! curl -fsSL https://tailscale.com/install.sh | sudo sh; then
+        echo "Failed to install Tailscale. Please check your internet connection and try again."
         exit 1
     fi
-    if ! sudo systemctl start tailscaled; then
-        echo "Failed to start Tailscale service. Please check if Tailscale was installed correctly."
+
+    echo "Enabling and starting Tailscale service..."
+    if ! systemctl is-active --quiet tailscaled; then
+        if ! sudo systemctl enable tailscaled; then
+            echo "Failed to enable Tailscale service. Please check if Tailscale was installed correctly."
+            exit 1
+        fi
+        if ! sudo systemctl start tailscaled; then
+            echo "Failed to start Tailscale service. Please check if Tailscale was installed correctly."
+            exit 1
+        fi
+    fi
+
+    echo "Starting Tailscale with SSH enabled..."
+    if ! sudo tailscale up --ssh; then
+        echo "Failed to configure Tailscale. Please check if Tailscale was installed correctly."
         exit 1
     fi
-fi
-
-echo "Starting Tailscale with SSH enabled..."
-if ! sudo tailscale up --ssh; then
-    echo "Failed to configure Tailscale. Please check if Tailscale was installed correctly."
-    exit 1
 fi
 
 # Install Nginx
@@ -187,17 +191,8 @@ esac
 # Verify firewall status (optional)
 sudo ufw status
 
-# Enable Nginx on boot
-echo "Enabling Nginx to start on boot..."
-sudo systemctl enable nginx
-
-# Start Nginx Now
-echo "Starting Nginx..."
-sudo systemctl start nginx
-
-# Create Web Root and Set Permissions
-echo "Setting up web root directory..."
-sudo mkdir -p $WEBROOT
+# Create web root directory
+sudo mkdir -p "$WEBROOT"
 sudo chown -R $USER:$USER /var/www/$DOMAIN
 sudo chmod -R 755 /var/www/$DOMAIN
 
@@ -207,6 +202,10 @@ create_nginx_config
 # Enable server block
 echo "Enabling Nginx site configuration..."
 sudo ln -s /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
+
+# Enable Nginx on boot
+echo "Enabling Nginx to start on boot..."
+sudo systemctl enable nginx
 
 # Test Nginx config and reload
 echo "Testing Nginx configuration..."
